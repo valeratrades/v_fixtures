@@ -154,7 +154,7 @@ impl Fixture {
 
 		TempFixture {
 			root: temp_dir.path().to_path_buf(),
-			_temp_dir: temp_dir,
+			temp_dir,
 			files: self.files.clone(),
 		}
 	}
@@ -182,10 +182,12 @@ impl Fixture {
 }
 
 /// A fixture written to a temporary directory
+#[derive(derive_new::new)]
 pub struct TempFixture {
 	/// Root path of the temporary directory
 	pub root: PathBuf,
-	_temp_dir: tempfile::TempDir,
+	/// The temp directory handle - kept alive to preserve the directory
+	pub temp_dir: tempfile::TempDir,
 	/// Original files that were written
 	pub files: Vec<FixtureFile>,
 }

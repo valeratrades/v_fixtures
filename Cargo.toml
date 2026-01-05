@@ -2,7 +2,7 @@ cargo-features = ["codegen-backend"]
 
 [package]
 name = "v_fixtures"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Test fixture utilities for inline multi-file test cases with //- /path syntax"
 license = "MIT OR Apache-2.0"
@@ -14,6 +14,7 @@ categories = ["development-tools::testing"]
 cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 
 [dependencies]
+derive-new = "0"
 tempfile = "3"
 walkdir = "2"
 
