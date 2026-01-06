@@ -327,6 +327,8 @@ pub fn assert_fixture_eq(expected: &Fixture, actual: &Fixture) {
 	}
 }
 
+pub mod fs_standards;
+
 /// Render a fixture back to string format (for snapshots)
 ///
 /// Single-file fixtures render as just the content.
