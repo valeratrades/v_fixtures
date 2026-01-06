@@ -156,6 +156,7 @@ impl Fixture {
 			root: temp_dir.path().to_path_buf(),
 			temp_dir,
 			files: self.files.clone(),
+			cwd: None,
 		}
 	}
 
@@ -190,9 +191,50 @@ pub struct TempFixture {
 	pub temp_dir: tempfile::TempDir,
 	/// Original files that were written
 	pub files: Vec<FixtureFile>,
+	/// Current working directory for path resolution (relative to root).
+	/// Defaults to root. Used by `read_all_from_disk` to determine which
+	/// paths to include and how to format them.
+	#[new(default)]
+	cwd: Option<PathBuf>,
 }
 
 impl TempFixture {
+	/// Set the current working directory for path resolution.
+	///
+	/// When `read_all_from_disk` is called, only files under this directory
+	/// will be included, and paths will be relative to it.
+	///
+	/// # Example
+	///
+	/// ```
+	/// use v_fixtures::Fixture;
+	///
+	/// let fixture = Fixture::parse(r#"
+	/// //- /data/app/file.txt
+	/// content
+	/// //- /cache/temp.txt
+	/// temp
+	/// "#);
+	/// let temp = fixture.write_to_tempdir().cwd("data/app");
+	///
+	/// // Only files under data/app are included
+	/// let result = temp.read_all_from_disk();
+	/// assert_eq!(result.files.len(), 1);
+	/// assert_eq!(result.files[0].path, "/file.txt");
+	/// ```
+	pub fn cwd(mut self, path: &str) -> Self {
+		self.cwd = Some(PathBuf::from(path.trim_start_matches('/')));
+		self
+	}
+
+	/// Get the effective cwd path (absolute)
+	fn effective_cwd(&self) -> PathBuf {
+		match &self.cwd {
+			Some(cwd) => self.root.join(cwd),
+			None => self.root.clone(),
+		}
+	}
+
 	/// Get the full path to a file
 	pub fn path(&self, relative: &str) -> PathBuf {
 		self.root.join(relative.trim_start_matches('/'))
@@ -231,14 +273,18 @@ impl TempFixture {
 	}
 
 	/// Read all files from disk (discovering any new files or noting deleted ones)
-	/// Returns files sorted by path for deterministic output
+	/// Returns files sorted by path for deterministic output.
+	///
+	/// If `cwd` is set, only files under that directory are included and paths
+	/// are relative to it. Otherwise, all files under root are included.
 	pub fn read_all_from_disk(&self) -> Fixture {
 		let mut files: Vec<FixtureFile> = Vec::new();
+		let base = self.effective_cwd();
 
-		for entry in walkdir::WalkDir::new(&self.root).into_iter().filter_map(Result::ok) {
+		for entry in walkdir::WalkDir::new(&base).into_iter().filter_map(Result::ok) {
 			let path = entry.path();
 			if path.is_file() {
-				let relative_path = path.strip_prefix(&self.root).expect("path should be under root");
+				let relative_path = path.strip_prefix(&base).expect("path should be under base");
 				let relative_str = format!("/{}", relative_path.to_string_lossy());
 				if let Ok(text) = fs::read_to_string(path) {
 					files.push(FixtureFile { path: relative_str, text });
@@ -495,5 +541,82 @@ mod tests {
 		assert!(result.contains("/a.rs"));
 		assert!(result.contains("/b.rs"));
 		assert!(result.contains("/c.rs"));
+	}
+
+	#[test]
+	fn test_cwd_filters_files() {
+		let fixture = Fixture::parse(
+			r#"
+//- /data/app/file.txt
+app content
+//- /data/other/file.txt
+other content
+//- /cache/temp.txt
+temp
+"#,
+		);
+		let temp = fixture.write_to_tempdir().cwd("data/app");
+
+		let result = temp.read_all_from_disk();
+		assert_eq!(result.files.len(), 1);
+		assert_eq!(result.files[0].path, "/file.txt");
+		assert!(result.files[0].text.contains("app content"));
+	}
+
+	#[test]
+	fn test_cwd_with_leading_slash() {
+		let fixture = Fixture::parse(
+			r#"
+//- /src/main.rs
+fn main() {}
+//- /tests/test.rs
+fn test() {}
+"#,
+		);
+		// Both "/src" and "src" should work the same
+		let temp = fixture.write_to_tempdir().cwd("/src");
+
+		let result = temp.read_all_from_disk();
+		assert_eq!(result.files.len(), 1);
+		assert_eq!(result.files[0].path, "/main.rs");
+	}
+
+	#[test]
+	fn test_cwd_nested_paths() {
+		let fixture = Fixture::parse(
+			r#"
+//- /data/todo/blockers/work.md
+- task 1
+//- /data/todo/blockers/home.md
+- task 2
+//- /data/todo/config.json
+{}
+"#,
+		);
+		let temp = fixture.write_to_tempdir().cwd("data/todo");
+
+		let result = temp.read_all_from_disk();
+		assert_eq!(result.files.len(), 3);
+		assert!(result.contains("/blockers/work.md"));
+		assert!(result.contains("/blockers/home.md"));
+		assert!(result.contains("/config.json"));
+	}
+
+	#[test]
+	fn test_no_cwd_includes_all() {
+		let fixture = Fixture::parse(
+			r#"
+//- /data/file.txt
+data
+//- /cache/file.txt
+cache
+"#,
+		);
+		let temp = fixture.write_to_tempdir();
+
+		let result = temp.read_all_from_disk();
+		assert_eq!(result.files.len(), 2);
+		assert!(result.contains("/data/file.txt"));
+		assert!(result.contains("/cache/file.txt"));
 	}
 }
