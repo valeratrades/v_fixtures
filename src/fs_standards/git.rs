@@ -96,7 +96,7 @@ impl Git {
 		let output = self.run(&["commit", "-m", message]).expect("git commit failed");
 		if !output.status.success() {
 			let stderr = String::from_utf8_lossy(&output.stderr);
-			panic!("git commit failed: {}", stderr);
+			panic!("git commit failed: {stderr}");
 		}
 		self.head_hash()
 	}
@@ -135,7 +135,7 @@ impl Git {
 		let output = self.run(&["checkout", name]).expect("git checkout failed");
 		if !output.status.success() {
 			let stderr = String::from_utf8_lossy(&output.stderr);
-			panic!("git checkout failed: {}", stderr);
+			panic!("git checkout failed: {stderr}");
 		}
 	}
 
@@ -144,7 +144,7 @@ impl Git {
 		let output = self.run(&["checkout", "-b", name]).expect("git checkout -b failed");
 		if !output.status.success() {
 			let stderr = String::from_utf8_lossy(&output.stderr);
-			panic!("git checkout -b failed: {}", stderr);
+			panic!("git checkout -b failed: {stderr}");
 		}
 	}
 
@@ -152,13 +152,13 @@ impl Git {
 	///
 	/// Returns Ok(()) if merge succeeded, Err with conflict info if conflicts.
 	pub fn merge(&self, branch: &str) -> Result<(), String> {
-		let output = self.run(&["merge", branch, "-m", &format!("Merge {}", branch)]).expect("git merge failed");
+		let output = self.run(&["merge", branch, "-m", &format!("Merge {branch}")]).expect("git merge failed");
 		if output.status.success() {
 			Ok(())
 		} else {
 			let stdout = String::from_utf8_lossy(&output.stdout);
 			let stderr = String::from_utf8_lossy(&output.stderr);
-			Err(format!("{}\n{}", stdout, stderr))
+			Err(format!("{stdout}\n{stderr}"))
 		}
 	}
 
