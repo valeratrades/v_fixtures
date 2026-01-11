@@ -1,8 +1,9 @@
 //! Filesystem standard extensions for TempFixture.
 //!
 //! Provides wrappers around TempFixture that understand different filesystem
-//! layout standards (XDG, FHS, etc.).
+//! layout standards (XDG, FHS, etc.) and common tools like git.
 
+pub mod git;
 pub mod xdg;
 
 pub mod fhs {

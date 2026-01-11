@@ -259,6 +259,35 @@ impl TempFixture {
 		fs::write(path, content).expect("failed to write file");
 	}
 
+	/// Create a named pipe (FIFO) at the given path.
+	///
+	/// Useful for mocking interactive processes in tests where you need
+	/// to signal when a "blocking" operation should complete.
+	///
+	/// # Example
+	///
+	/// ```ignore
+	/// use std::io::Write;
+	/// let temp = Fixture::parse("").write_to_tempdir();
+	/// let pipe_path = temp.create_pipe("signal_pipe");
+	///
+	/// // In test: signal the pipe to unblock waiting process
+	/// let mut pipe = std::fs::OpenOptions::new()
+	///     .write(true)
+	///     .open(&pipe_path)
+	///     .unwrap();
+	/// pipe.write_all(b"x").unwrap();
+	/// ```
+	#[cfg(unix)]
+	pub fn create_pipe(&self, relative: &str) -> PathBuf {
+		let path = self.path(relative);
+		if let Some(parent) = path.parent() {
+			fs::create_dir_all(parent).expect("failed to create parent dirs");
+		}
+		nix::unistd::mkfifo(&path, nix::sys::stat::Mode::S_IRWXU).expect("failed to create named pipe");
+		path
+	}
+
 	/// Read all original files and return as a new Fixture
 	pub fn read_all(&self) -> Fixture {
 		let files = self
