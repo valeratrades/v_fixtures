@@ -2,7 +2,7 @@
 //!
 //! Provides utilities for creating and manipulating git repositories in tests.
 //!
-//! # Example
+//! # Basic usage with a fixture
 //!
 //! ```
 //! use v_fixtures::{Fixture, fs_standards::git::Git};
@@ -11,7 +11,8 @@
 //! //- /README.md
 //! # Test Project
 //! "#);
-//! let git = Git::init(fixture.write_to_tempdir());
+//! let temp = fixture.write_to_tempdir();
+//! let git = Git::init(&temp.root);
 //!
 //! // Make an initial commit
 //! git.add_all();
@@ -20,61 +21,58 @@
 //! // Check status
 //! assert!(git.is_clean());
 //! ```
+//!
+//! # Usage with any path
+//!
+//! ```ignore
+//! use v_fixtures::fs_standards::git::Git;
+//!
+//! // Initialize git in any directory
+//! let git = Git::init("/tmp/my-repo");
+//! git.add_all();
+//! git.commit("Initial");
+//! ```
 
 use std::{
-	path::PathBuf,
+	path::{Path, PathBuf},
 	process::{Command, Output},
 };
 
-use crate::TempFixture;
-
-/// Git repository wrapper for test fixtures.
+/// Git repository wrapper for any directory.
 ///
-/// Initializes a git repository in the fixture root and provides
-/// helper methods for common git operations.
+/// Provides helper methods for common git operations in tests.
+/// Does not own the directory - just wraps a path.
 pub struct Git {
-	/// The underlying TempFixture
-	pub inner: TempFixture,
+	/// Root path of the git repository
+	pub root: PathBuf,
 }
 
 impl Git {
-	/// Initialize a new git repository in the fixture root.
+	/// Initialize a new git repository at the given path.
 	///
-	/// Also configures a test user (name and email) for commits.
-	pub fn init(inner: TempFixture) -> Self {
-		let git = Self { inner };
+	/// Creates the directory if it doesn't exist, runs `git init`,
+	/// and configures a test user (name and email) for commits.
+	pub fn init(root: impl Into<PathBuf>) -> Self {
+		let root = root.into();
+		std::fs::create_dir_all(&root).expect("failed to create git directory");
+
+		let git = Self { root };
 		git.run(&["init"]).expect("git init failed");
 		git.run(&["config", "user.email", "test@test.local"]).expect("git config email failed");
 		git.run(&["config", "user.name", "Test User"]).expect("git config name failed");
 		git
 	}
 
-	/// Initialize git in a specific subdirectory of the fixture.
+	/// Wrap an existing git repository at the given path.
 	///
-	/// Useful when the git repo should be inside the fixture rather than at root.
-	pub fn init_in(inner: TempFixture, subdir: &str) -> Self {
-		let git = Self { inner };
-		let dir = git.inner.root.join(subdir);
-		std::fs::create_dir_all(&dir).expect("failed to create git directory");
-		git.run_in(&dir, &["init"]).expect("git init failed");
-		git.run_in(&dir, &["config", "user.email", "test@test.local"]).expect("git config email failed");
-		git.run_in(&dir, &["config", "user.name", "Test User"]).expect("git config name failed");
-		git
+	/// Does not run `git init` - assumes the repository already exists.
+	pub fn open(root: impl Into<PathBuf>) -> Self {
+		Self { root: root.into() }
 	}
 
-	/// Get the root directory of the fixture.
-	pub fn root(&self) -> &PathBuf {
-		&self.inner.root
-	}
-
-	/// Run a git command in the repository root.
+	/// Run a git command in the repository.
 	pub fn run(&self, args: &[&str]) -> std::io::Result<Output> {
-		Command::new("git").args(args).current_dir(&self.inner.root).output()
-	}
-
-	/// Run a git command in a specific directory.
-	pub fn run_in(&self, dir: &PathBuf, args: &[&str]) -> std::io::Result<Output> {
-		Command::new("git").args(args).current_dir(dir).output()
+		Command::new("git").args(args).current_dir(&self.root).output()
 	}
 
 	/// Stage all changes.
@@ -174,7 +172,7 @@ impl Git {
 
 	/// Check if currently in a merge conflict state.
 	pub fn has_conflicts(&self) -> bool {
-		self.inner.root.join(".git/MERGE_HEAD").exists()
+		self.root.join(".git/MERGE_HEAD").exists()
 	}
 
 	/// Get list of files with conflicts.
@@ -184,13 +182,13 @@ impl Git {
 	}
 
 	/// Read a file from the repository.
-	pub fn read(&self, path: &str) -> String {
-		std::fs::read_to_string(self.inner.root.join(path)).expect("failed to read file")
+	pub fn read(&self, path: impl AsRef<Path>) -> String {
+		std::fs::read_to_string(self.root.join(path)).expect("failed to read file")
 	}
 
 	/// Write a file to the repository.
-	pub fn write(&self, path: &str, content: &str) {
-		let full_path = self.inner.root.join(path);
+	pub fn write(&self, path: impl AsRef<Path>, content: &str) {
+		let full_path = self.root.join(path);
 		if let Some(parent) = full_path.parent() {
 			std::fs::create_dir_all(parent).expect("failed to create parent dirs");
 		}
@@ -211,10 +209,12 @@ mod tests {
 # Test
 "#,
 		);
-		let git = Git::init(fixture.write_to_tempdir());
+		let temp = fixture.write_to_tempdir();
+		let git = Git::init(&temp.root);
 
 		// Should have .git directory
-		assert!(git.inner.root.join(".git").exists());
+		assert!(temp.root.join(".git").exists());
+		assert!(git.is_clean() || !git.is_clean()); // just check it doesn't panic
 	}
 
 	#[test]
@@ -225,7 +225,8 @@ mod tests {
 content
 "#,
 		);
-		let git = Git::init(fixture.write_to_tempdir());
+		let temp = fixture.write_to_tempdir();
+		let git = Git::init(&temp.root);
 
 		git.add_all();
 		let hash = git.commit("Initial commit");
@@ -242,7 +243,8 @@ content
 original
 "#,
 		);
-		let git = Git::init(fixture.write_to_tempdir());
+		let temp = fixture.write_to_tempdir();
+		let git = Git::init(&temp.root);
 
 		git.add_all();
 		git.commit("Initial");
@@ -268,7 +270,8 @@ original
 original
 "#,
 		);
-		let git = Git::init(fixture.write_to_tempdir());
+		let temp = fixture.write_to_tempdir();
+		let git = Git::init(&temp.root);
 
 		git.add_all();
 		git.commit("Initial");
@@ -293,5 +296,21 @@ original
 
 		// Cleanup
 		git.merge_abort();
+	}
+
+	#[test]
+	fn test_git_init_in_subdir() {
+		let fixture = Fixture::parse("");
+		let temp = fixture.write_to_tempdir();
+
+		// Initialize git in a subdirectory
+		let subdir = temp.root.join("nested/repo");
+		let git = Git::init(&subdir);
+
+		assert!(subdir.join(".git").exists());
+		git.write("test.txt", "hello");
+		git.add_all();
+		git.commit("Test commit");
+		assert!(git.is_clean());
 	}
 }
