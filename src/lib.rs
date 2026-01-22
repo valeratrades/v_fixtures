@@ -52,16 +52,16 @@
 //! # Testing with insta snapshots
 //!
 //! ```ignore
-//! use v_fixtures::{Fixture, render_fixture};
+//! use v_fixtures::Fixture;
 //!
 //! // Apply some transformation to files...
 //! let temp = fixture.write_to_tempdir();
 //! // ... run your tool ...
 //! let result = temp.read_all_from_disk();
-//! insta::assert_snapshot!(render_fixture(&result), @"...");
+//! insta::assert_snapshot!(result.render(), @"...");
 //! ```
 
-use std::{fs, path::PathBuf};
+use std::{borrow::Cow, fs, path::PathBuf};
 
 /// A single file in a fixture
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -79,6 +79,55 @@ pub struct Fixture {
 }
 
 impl Fixture {
+	/// Read all files from a directory into a Fixture.
+	///
+	/// This walks the directory recursively, skipping `.git` directories,
+	/// and creates a Fixture with all text files found. Files are sorted
+	/// by path for deterministic output.
+	///
+	/// # Arguments
+	///
+	/// * `path` - The directory to read from
+	///
+	/// # Returns
+	///
+	/// Returns `None` if the directory doesn't exist, or `Some(Fixture)` with
+	/// an empty files vec if the directory exists but contains no readable files.
+	///
+	/// # Example
+	///
+	/// ```ignore
+	/// use v_fixtures::Fixture;
+	///
+	/// let fixture = Fixture::read_from_directory("/path/to/dir").unwrap();
+	/// insta::assert_snapshot!(fixture.render());
+	/// ```
+	pub fn read_from_directory(path: impl AsRef<std::path::Path>) -> Option<Self> {
+		let path = path.as_ref();
+		if !path.exists() {
+			return None;
+		}
+
+		let mut files = Vec::new();
+		for entry in walkdir::WalkDir::new(path)
+			.into_iter()
+			.filter_entry(|e| !e.path().to_string_lossy().contains(".git"))
+			.filter_map(Result::ok)
+		{
+			let entry_path = entry.path();
+			if entry_path.is_file() {
+				let relative_path = entry_path.strip_prefix(path).expect("path should be under base");
+				let relative_str = format!("/{}", relative_path.to_string_lossy());
+				if let Ok(text) = fs::read_to_string(entry_path) {
+					files.push(FixtureFile { path: relative_str, text });
+				}
+			}
+		}
+
+		files.sort_by(|a, b| a.path.cmp(&b.path));
+		Some(Self { files })
+	}
+
 	/// Parse a fixture string into files.
 	///
 	/// Supports the `//- /path.rs` syntax for multi-file fixtures.
@@ -179,6 +228,32 @@ impl Fixture {
 	/// Check if fixture contains a file at the given path
 	pub fn contains(&self, path: &str) -> bool {
 		self.files.iter().any(|f| f.path == path)
+	}
+
+	/// Render the fixture to a string format (for snapshots).
+	///
+	/// Single-file fixtures render as just the content.
+	/// Multi-file fixtures render with `//- /path` markers.
+	///
+	/// For more control over rendering (line redaction, git hash normalization),
+	/// use [`FixtureRenderer`].
+	///
+	/// # Example
+	///
+	/// ```
+	/// use v_fixtures::Fixture;
+	///
+	/// let fixture = Fixture::parse(r#"
+	/// //- /a.rs
+	/// fn a() {}
+	/// //- /b.rs
+	/// fn b() {}
+	/// "#);
+	/// let output = fixture.render();
+	/// assert!(output.contains("//- /a.rs"));
+	/// ```
+	pub fn render(&self) -> String {
+		FixtureRenderer::new(self).render()
 	}
 }
 
@@ -404,26 +479,196 @@ pub fn assert_fixture_eq(expected: &Fixture, actual: &Fixture) {
 
 pub mod fs_standards;
 
-/// Render a fixture back to string format (for snapshots)
+/// Builder for rendering fixtures with various normalizations.
 ///
-/// Single-file fixtures render as just the content.
-/// Multi-file fixtures render with `//- /path` markers.
-pub fn render_fixture(fixture: &Fixture) -> String {
-	if fixture.files.len() == 1 {
-		return fixture.files[0].text.clone();
-	}
+/// # Example
+///
+/// ```ignore
+/// use v_fixtures::{Fixture, FixtureRenderer};
+///
+/// let fixture = Fixture::read_from_directory("/path/to/dir").unwrap();
+/// let output = FixtureRenderer::new(&fixture)
+///     .normalize_git_hashes()
+///     .redact_lines(&[20, 25])
+///     .render();
+/// insta::assert_snapshot!(output);
+/// ```
+pub struct FixtureRenderer<'a> {
+	fixture: &'a Fixture,
+	normalize_git_hashes: bool,
+	lines_to_redact: Vec<usize>,
+	redact_message: Cow<'static, str>,
+	path_patterns: Vec<PathPattern>,
+}
 
-	let mut result = String::new();
-	for file in &fixture.files {
-		result.push_str("//- ");
-		result.push_str(&file.path);
-		result.push('\n');
-		result.push_str(&file.text);
-		if !file.text.ends_with('\n') {
-			result.push('\n');
+struct PathPattern {
+	regex: regex::Regex,
+	exclude: bool,
+}
+
+impl<'a> FixtureRenderer<'a> {
+	/// Create a new renderer for the given fixture.
+	pub fn new(fixture: &'a Fixture) -> Self {
+		Self {
+			fixture,
+			normalize_git_hashes: false,
+			lines_to_redact: Vec::new(),
+			redact_message: Cow::Borrowed("[REDACTED]"),
+			path_patterns: Vec::new(),
 		}
 	}
-	result
+
+	/// Normalize git commit hashes in diff3 conflict markers.
+	///
+	/// Replaces patterns like `||||||| a0f7d74` with `||||||| [hash]`.
+	/// Useful for deterministic snapshots when testing git merge conflicts.
+	pub fn normalize_git_hashes(mut self) -> Self {
+		self.normalize_git_hashes = true;
+		self
+	}
+
+	/// Redact specific lines from the output.
+	///
+	/// Line numbers are 1-indexed and refer to the final rendered output.
+	/// Redacted lines are replaced with the redact message (default: "[REDACTED]").
+	///
+	/// Useful for non-deterministic values like timestamps.
+	pub fn redact_lines(mut self, lines: &[usize]) -> Self {
+		self.lines_to_redact = lines.to_vec();
+		self
+	}
+
+	/// Set a custom message for redacted lines.
+	///
+	/// Default is "[REDACTED]".
+	pub fn redact_message(mut self, message: impl Into<Cow<'static, str>>) -> Self {
+		self.redact_message = message.into();
+		self
+	}
+
+	/// Filter files by path using a regex pattern.
+	///
+	/// The pattern is matched as a substring against file paths.
+	/// Prefix with `!` to exclude matching files instead.
+	///
+	/// Multiple calls accumulate patterns. Files must match at least one
+	/// inclusion pattern (if any) and must not match any exclusion pattern.
+	///
+	/// # Example
+	///
+	/// ```
+	/// use v_fixtures::{Fixture, FixtureRenderer};
+	///
+	/// let fixture = Fixture::parse(r#"
+	/// //- /src/main.rs
+	/// fn main() {}
+	/// //- /src/lib.rs
+	/// pub fn lib() {}
+	/// //- /tests/test.rs
+	/// fn test() {}
+	/// "#);
+	///
+	/// // Include only src files
+	/// let output = FixtureRenderer::new(&fixture)
+	///     .regex("^/src/")
+	///     .render();
+	/// assert!(output.contains("/src/main.rs"));
+	/// assert!(!output.contains("/tests/"));
+	///
+	/// // Exclude test files
+	/// let output = FixtureRenderer::new(&fixture)
+	///     .regex("!test")
+	///     .render();
+	/// assert!(output.contains("/src/main.rs"));
+	/// assert!(!output.contains("/tests/"));
+	/// ```
+	pub fn regex(mut self, pattern: &str) -> Self {
+		let (pattern, exclude) = match pattern.strip_prefix('!') {
+			Some(rest) => (rest, true),
+			None => (pattern, false),
+		};
+		let regex = regex::Regex::new(pattern).expect("invalid regex pattern");
+		self.path_patterns.push(PathPattern { regex, exclude });
+		self
+	}
+
+	/// Render the fixture to a string.
+	pub fn render(self) -> String {
+		let mut result = self.render_raw();
+
+		// Apply git hash normalization
+		if self.normalize_git_hashes {
+			// Regex to match git commit hashes in diff3 conflict markers (e.g., "||||||| a0f7d74")
+			let hash_regex = regex::Regex::new(r"\|\|\|\|\|\|\| [0-9a-f]{7,40}").unwrap();
+			result = hash_regex.replace_all(&result, "||||||| [hash]").to_string();
+		}
+
+		// Apply line redaction
+		if !self.lines_to_redact.is_empty() {
+			result = result
+				.lines()
+				.enumerate()
+				.map(|(i, line)| {
+					let line_num = i + 1; // 1-indexed
+					if self.lines_to_redact.contains(&line_num) {
+						self.redact_message.to_string()
+					} else {
+						line.to_string()
+					}
+				})
+				.collect::<Vec<_>>()
+				.join("\n");
+		}
+
+		result
+	}
+
+	/// Render without any post-processing (no normalization or redaction).
+	fn render_raw(&self) -> String {
+		let files: Vec<_> = self.fixture.files.iter().filter(|f| self.matches_path(&f.path)).collect();
+
+		if files.len() == 1 {
+			return files[0].text.clone();
+		}
+
+		let mut result = String::new();
+		for file in files {
+			result.push_str("//- ");
+			result.push_str(&file.path);
+			result.push('\n');
+			result.push_str(&file.text);
+			if !file.text.ends_with('\n') {
+				result.push('\n');
+			}
+		}
+		result
+	}
+
+	/// Check if a path matches the configured patterns.
+	///
+	/// Returns true if:
+	/// - No patterns are configured, OR
+	/// - Path matches at least one inclusion pattern (if any) AND does not match any exclusion pattern
+	fn matches_path(&self, path: &str) -> bool {
+		if self.path_patterns.is_empty() {
+			return true;
+		}
+
+		let inclusions: Vec<_> = self.path_patterns.iter().filter(|p| !p.exclude).collect();
+		let exclusions: Vec<_> = self.path_patterns.iter().filter(|p| p.exclude).collect();
+
+		// If there are exclusion patterns and path matches any, reject
+		if exclusions.iter().any(|p| p.regex.is_match(path)) {
+			return false;
+		}
+
+		// If there are inclusion patterns, path must match at least one
+		if !inclusions.is_empty() {
+			return inclusions.iter().any(|p| p.regex.is_match(path));
+		}
+
+		true
+	}
 }
 
 #[cfg(test)]
@@ -502,19 +747,19 @@ mod tests {
 	}
 
 	#[test]
-	fn test_render_fixture_single() {
+	fn test_render_single() {
 		let fixture = Fixture {
 			files: vec![FixtureFile {
 				path: "/main.rs".to_owned(),
 				text: "fn main() {}\n".to_owned(),
 			}],
 		};
-		let rendered = render_fixture(&fixture);
+		let rendered = fixture.render();
 		assert_eq!(rendered, "fn main() {}\n");
 	}
 
 	#[test]
-	fn test_render_fixture_multi() {
+	fn test_render_multi() {
 		let fixture = Fixture {
 			files: vec![
 				FixtureFile {
@@ -527,7 +772,7 @@ mod tests {
 				},
 			],
 		};
-		let rendered = render_fixture(&fixture);
+		let rendered = fixture.render();
 		assert!(rendered.contains("//- /main.rs"));
 		assert!(rendered.contains("//- /lib.rs"));
 	}
@@ -647,5 +892,208 @@ cache
 		assert_eq!(result.files.len(), 2);
 		assert!(result.contains("/data/file.txt"));
 		assert!(result.contains("/cache/file.txt"));
+	}
+
+	#[test]
+	fn test_read_from_directory() {
+		// Create a temp directory with some files
+		let fixture = Fixture::parse(
+			r#"
+//- /src/main.rs
+fn main() {}
+//- /src/lib.rs
+pub fn lib() {}
+//- /README.md
+# Test
+"#,
+		);
+		let temp = fixture.write_to_tempdir();
+
+		// Read it back using read_from_directory
+		let result = Fixture::read_from_directory(temp.root.clone()).unwrap();
+		assert_eq!(result.files.len(), 3);
+		assert!(result.contains("/src/main.rs"));
+		assert!(result.contains("/src/lib.rs"));
+		assert!(result.contains("/README.md"));
+	}
+
+	#[test]
+	fn test_read_from_directory_nonexistent() {
+		let result = Fixture::read_from_directory("/nonexistent/path/that/does/not/exist");
+		assert!(result.is_none());
+	}
+
+	#[test]
+	fn test_read_from_directory_skips_git() {
+		let fixture = Fixture::parse(
+			r#"
+//- /file.txt
+content
+//- /.git/config
+git config
+//- /.git/HEAD
+ref: refs/heads/main
+"#,
+		);
+		let temp = fixture.write_to_tempdir();
+
+		let result = Fixture::read_from_directory(temp.root.clone()).unwrap();
+		// Should only have file.txt, not .git contents
+		assert_eq!(result.files.len(), 1);
+		assert!(result.contains("/file.txt"));
+	}
+
+	#[test]
+	fn test_fixture_renderer_redact_lines() {
+		// Multi-file fixture so we get the //- header lines
+		let fixture = Fixture::parse(
+			r#"
+//- /config.json
+{
+  "name": "test",
+  "timestamp": "2026-01-22T12:00:00Z",
+  "value": 42
+}
+//- /other.txt
+other
+"#,
+		);
+
+		// Rendered output:
+		// 1: //- /config.json
+		// 2: {
+		// 3:   "name": "test",
+		// 4:   "timestamp": "2026-01-22T12:00:00Z",
+		// 5:   "value": 42
+		// 6: }
+		// 7: //- /other.txt
+		// 8: other
+		let rendered = FixtureRenderer::new(&fixture).redact_lines(&[4]).render();
+
+		assert!(rendered.contains("\"name\": \"test\""));
+		assert!(rendered.contains("[REDACTED]"));
+		assert!(!rendered.contains("2026-01-22"));
+		assert!(rendered.contains("\"value\": 42"));
+	}
+
+	#[test]
+	fn test_fixture_renderer_custom_redact_message() {
+		let fixture = Fixture::parse(
+			r#"
+line 1
+line 2
+line 3
+"#,
+		);
+
+		let rendered = FixtureRenderer::new(&fixture).redact_lines(&[2]).redact_message("[TIMESTAMP REDACTED]").render();
+
+		assert!(rendered.contains("line 1"));
+		assert!(rendered.contains("[TIMESTAMP REDACTED]"));
+		assert!(rendered.contains("line 3"));
+		assert!(!rendered.contains("line 2"));
+	}
+
+	#[test]
+	fn test_fixture_renderer_normalize_git_hashes() {
+		let fixture = Fixture::parse(
+			r#"
+<<<<<<< HEAD
+local content
+||||||| a0f7d74
+original content
+=======
+remote content
+>>>>>>> feature
+"#,
+		);
+
+		let rendered = FixtureRenderer::new(&fixture).normalize_git_hashes().render();
+
+		assert!(rendered.contains("||||||| [hash]"));
+		assert!(!rendered.contains("a0f7d74"));
+	}
+
+	#[test]
+	fn test_fixture_renderer_combined() {
+		// Multi-file fixture
+		let fixture = Fixture::parse(
+			r#"
+//- /file.txt
+line 1
+timestamp: 2026-01-22T12:00:00Z
+||||||| abc1234
+conflict marker
+//- /other.txt
+other
+"#,
+		);
+
+		// Rendered output:
+		// 1: //- /file.txt
+		// 2: line 1
+		// 3: timestamp: 2026-01-22T12:00:00Z
+		// 4: ||||||| abc1234
+		// 5: conflict marker
+		// 6: //- /other.txt
+		// 7: other
+		let rendered = FixtureRenderer::new(&fixture)
+			.normalize_git_hashes()
+			.redact_lines(&[3]) // "timestamp: ..." line in rendered output
+			.render();
+
+		assert!(rendered.contains("line 1"));
+		assert!(rendered.contains("[REDACTED]"));
+		assert!(rendered.contains("||||||| [hash]"));
+		assert!(!rendered.contains("abc1234"));
+	}
+
+	#[test]
+	fn test_fixture_renderer_regex_inclusion() {
+		let fixture = Fixture::parse(
+			r#"
+//- /src/main.rs
+fn main() {}
+//- /src/lib.rs
+pub fn lib() {}
+//- /tests/integration.rs
+fn test_integration() {}
+//- /benches/bench.rs
+fn benchmark() {}
+"#,
+		);
+
+		// Include only files under /src/
+		let rendered = FixtureRenderer::new(&fixture).regex("^/src/").render();
+
+		assert!(rendered.contains("//- /src/main.rs"));
+		assert!(rendered.contains("//- /src/lib.rs"));
+		assert!(!rendered.contains("/tests/"));
+		assert!(!rendered.contains("/benches/"));
+	}
+
+	#[test]
+	fn test_fixture_renderer_regex_exclusion() {
+		let fixture = Fixture::parse(
+			r#"
+//- /src/main.rs
+fn main() {}
+//- /src/lib.rs
+pub fn lib() {}
+//- /tests/integration.rs
+fn test_integration() {}
+//- /tests/unit.rs
+fn test_unit() {}
+"#,
+		);
+
+		// Exclude all test files
+		let rendered = FixtureRenderer::new(&fixture).regex("!/tests/").render();
+
+		assert!(rendered.contains("//- /src/main.rs"));
+		assert!(rendered.contains("//- /src/lib.rs"));
+		assert!(!rendered.contains("/tests/"));
+		assert!(!rendered.contains("integration"));
+		assert!(!rendered.contains("unit"));
 	}
 }

@@ -15,6 +15,7 @@ cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 
 [dependencies]
 derive-new = "0"
+regex = "1"
 tempfile = "3"
 walkdir = "2"
 
