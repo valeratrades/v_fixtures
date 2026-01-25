@@ -500,12 +500,6 @@ pub struct FixtureRenderer<'a> {
 	redact_message: Cow<'static, str>,
 	path_patterns: Vec<PathPattern>,
 }
-
-struct PathPattern {
-	regex: regex::Regex,
-	exclude: bool,
-}
-
 impl<'a> FixtureRenderer<'a> {
 	/// Create a new renderer for the given fixture.
 	pub fn new(fixture: &'a Fixture) -> Self {
@@ -669,6 +663,11 @@ impl<'a> FixtureRenderer<'a> {
 
 		true
 	}
+}
+
+struct PathPattern {
+	regex: regex::Regex,
+	exclude: bool,
 }
 
 #[cfg(test)]
