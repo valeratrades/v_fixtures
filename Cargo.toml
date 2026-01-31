@@ -2,7 +2,7 @@ cargo-features = ["codegen-backend"]
 
 [package]
 name = "v_fixtures"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2024"
 description = "Test fixture utilities for inline multi-file test cases with //- /path syntax"
 license = "MIT OR Apache-2.0"
