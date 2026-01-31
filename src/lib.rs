@@ -499,6 +499,7 @@ pub struct FixtureRenderer<'a> {
 	lines_to_redact: Vec<usize>,
 	redact_message: Cow<'static, str>,
 	path_patterns: Vec<PathPattern>,
+	always_show_filepath: bool,
 }
 impl<'a> FixtureRenderer<'a> {
 	/// Create a new renderer for the given fixture.
@@ -509,6 +510,7 @@ impl<'a> FixtureRenderer<'a> {
 			lines_to_redact: Vec::new(),
 			redact_message: Cow::Borrowed("[REDACTED]"),
 			path_patterns: Vec::new(),
+			always_show_filepath: false,
 		}
 	}
 
@@ -537,6 +539,15 @@ impl<'a> FixtureRenderer<'a> {
 	/// Default is "[REDACTED]".
 	pub fn redact_message(mut self, message: impl Into<Cow<'static, str>>) -> Self {
 		self.redact_message = message.into();
+		self
+	}
+
+	/// Always show filepath headers, even for single-file fixtures.
+	///
+	/// By default, single-file fixtures render without the `//- path` header.
+	/// This forces the header to always be included.
+	pub fn always_show_filepath(mut self) -> Self {
+		self.always_show_filepath = true;
 		self
 	}
 
@@ -621,7 +632,7 @@ impl<'a> FixtureRenderer<'a> {
 	fn render_raw(&self) -> String {
 		let files: Vec<_> = self.fixture.files.iter().filter(|f| self.matches_path(&f.path)).collect();
 
-		if files.len() == 1 {
+		if files.len() == 1 && !self.always_show_filepath {
 			return files[0].text.clone();
 		}
 
