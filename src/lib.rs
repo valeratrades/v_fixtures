@@ -1,3 +1,4 @@
+#![feature(default_field_values)]
 //! Test fixture utilities for defining multi-file test cases inline.
 //!
 //! This crate provides a way to define file trees inline in test code using
@@ -61,22 +62,11 @@
 //! insta::assert_snapshot!(result.render(), @"...");
 //! ```
 
-use std::{borrow::Cow, fs, path::PathBuf};
-
-/// A single file in a fixture
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FixtureFile {
-	/// Path relative to fixture root (e.g., "/main.rs" or "/tests/test.rs")
-	pub path: String,
-	/// File contents with meta lines stripped
-	pub text: String,
-}
-
-/// Parsed fixture containing multiple files
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct Fixture {
-	pub files: Vec<FixtureFile>,
-}
+use std::{
+	borrow::Cow,
+	fs,
+	path::{Path, PathBuf},
+};
 
 impl Fixture {
 	/// Read all files from a directory into a Fixture.
@@ -102,7 +92,7 @@ impl Fixture {
 	/// let fixture = Fixture::read_from_directory("/path/to/dir").unwrap();
 	/// insta::assert_snapshot!(fixture.render());
 	/// ```
-	pub fn read_from_directory(path: impl AsRef<std::path::Path>) -> Option<Self> {
+	pub fn read_from_directory(path: impl AsRef<Path>) -> Option<Self> {
 		let path = path.as_ref();
 		if !path.exists() {
 			return None;
@@ -257,22 +247,6 @@ impl Fixture {
 	}
 }
 
-/// A fixture written to a temporary directory
-#[derive(derive_new::new)]
-pub struct TempFixture {
-	/// Root path of the temporary directory
-	pub root: PathBuf,
-	/// The temp directory handle - kept alive to preserve the directory
-	pub temp_dir: tempfile::TempDir,
-	/// Original files that were written
-	pub files: Vec<FixtureFile>,
-	/// Current working directory for path resolution (relative to root).
-	/// Defaults to root. Used by `read_all_from_disk` to determine which
-	/// paths to include and how to format them.
-	#[new(default)]
-	cwd: Option<PathBuf>,
-}
-
 impl TempFixture {
 	/// Set the current working directory for path resolution.
 	///
@@ -402,49 +376,7 @@ impl TempFixture {
 	}
 }
 
-/// Parse a before/after fixture separated by `=>`
-///
-/// Returns (before_fixture, after_fixture)
-///
-/// # Example
-///
-/// ```
-/// use v_fixtures::parse_before_after;
-///
-/// let (before, after) = parse_before_after(r#"
-///     //- /test.rs
-///     fn main() { let x = 1; }
-///     =>
-///     //- /test.rs
-///     fn main() { let y = 1; }
-/// "#);
-/// assert!(before.files[0].text.contains("let x"));
-/// assert!(after.files[0].text.contains("let y"));
-/// ```
-pub fn parse_before_after(fixture: &str) -> (Fixture, Fixture) {
-	let fixture = trim_indent(fixture);
-	let parts: Vec<&str> = fixture.split("\n=>\n").collect();
-	assert_eq!(parts.len(), 2, "expected exactly one `=>` separator in before/after fixture");
-
-	let before = Fixture::parse(parts[0]);
-	let after = Fixture::parse(parts[1]);
-
-	(before, after)
-}
-
-/// Remove common leading indentation from all lines.
-///
-/// This allows writing nicely indented fixture strings in tests.
-pub fn trim_indent(text: &str) -> String {
-	let mut text = text;
-	if text.starts_with('\n') {
-		text = &text[1..];
-	}
-	let indent = text.lines().filter(|it| !it.trim().is_empty()).map(|it| it.len() - it.trim_start().len()).min().unwrap_or(0);
-	text.split_inclusive('\n')
-		.map(|line| if line.len() <= indent { line.trim_start_matches(' ') } else { &line[indent..] })
-		.collect()
-}
+pub mod fs_standards;
 
 /// Compare two fixtures for equality, with nice diff output on failure
 #[track_caller]
@@ -477,7 +409,80 @@ pub fn assert_fixture_eq(expected: &Fixture, actual: &Fixture) {
 	}
 }
 
-pub mod fs_standards;
+/// Remove common leading indentation from all lines.
+///
+/// This allows writing nicely indented fixture strings in tests.
+pub fn trim_indent(text: &str) -> String {
+	let mut text = text;
+	if text.starts_with('\n') {
+		text = &text[1..];
+	}
+	let indent = text.lines().filter(|it| !it.trim().is_empty()).map(|it| it.len() - it.trim_start().len()).min().unwrap_or(0);
+	text.split_inclusive('\n')
+		.map(|line| if line.len() <= indent { line.trim_start_matches(' ') } else { &line[indent..] })
+		.collect()
+}
+
+/// Parse a before/after fixture separated by `=>`
+///
+/// Returns (before_fixture, after_fixture)
+///
+/// # Example
+///
+/// ```
+/// use v_fixtures::parse_before_after;
+///
+/// let (before, after) = parse_before_after(r#"
+///     //- /test.rs
+///     fn main() { let x = 1; }
+///     =>
+///     //- /test.rs
+///     fn main() { let y = 1; }
+/// "#);
+/// assert!(before.files[0].text.contains("let x"));
+/// assert!(after.files[0].text.contains("let y"));
+/// ```
+pub fn parse_before_after(fixture: &str) -> (Fixture, Fixture) {
+	let fixture = trim_indent(fixture);
+	let parts: Vec<&str> = fixture.split("\n=>\n").collect();
+	assert_eq!(parts.len(), 2, "expected exactly one `=>` separator in before/after fixture");
+
+	let before = Fixture::parse(parts[0]);
+	let after = Fixture::parse(parts[1]);
+
+	(before, after)
+}
+
+/// A fixture written to a temporary directory
+#[derive(derive_new::new)]
+pub struct TempFixture {
+	/// Root path of the temporary directory
+	pub root: PathBuf,
+	/// The temp directory handle - kept alive to preserve the directory
+	pub temp_dir: tempfile::TempDir,
+	/// Original files that were written
+	pub files: Vec<FixtureFile>,
+	/// Current working directory for path resolution (relative to root).
+	/// Defaults to root. Used by `read_all_from_disk` to determine which
+	/// paths to include and how to format them.
+	#[new(default)]
+	cwd: Option<PathBuf>,
+}
+
+/// Parsed fixture containing multiple files
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Fixture {
+	pub files: Vec<FixtureFile>,
+}
+
+/// A single file in a fixture
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FixtureFile {
+	/// Path relative to fixture root (e.g., "/main.rs" or "/tests/test.rs")
+	pub path: String,
+	/// File contents with meta lines stripped
+	pub text: String,
+}
 
 /// Builder for rendering fixtures with various normalizations.
 ///
