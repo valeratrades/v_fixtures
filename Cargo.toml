@@ -27,3 +27,6 @@ insta = "1"
 
 [lints.clippy]
 tabs_in_doc_comments = "allow"
+
+[lints.rust]
+unused_features = "allow"
