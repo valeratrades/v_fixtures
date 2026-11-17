@@ -27,8 +27,11 @@ insta = "1"
 
 [lints.clippy]
 tabs_in_doc_comments = "allow"
+if_not_else = "warn"
+integer_division = "warn"
 
 [lints.rust]
+stable_features = "allow"
 unused_features = "allow"
 
 [lints.cargo]
